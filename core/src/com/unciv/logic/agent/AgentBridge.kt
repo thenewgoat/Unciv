@@ -19,7 +19,7 @@ import com.unciv.logic.battle.MapUnitCombatant
 import com.unciv.logic.battle.TargetHelper
 import com.unciv.models.ruleset.INonPerpetualConstruction
 import com.unciv.models.stats.Stat
-import com.unciv.logic.multiplayer.OnlineMultiplayer
+import com.unciv.logic.multiplayer.Multiplayer
 import com.unciv.ui.audio.MusicController
 import org.json.JSONArray
 import org.json.JSONObject
@@ -81,7 +81,7 @@ object AgentBridge {
         game.settings = GameSettings()
         game.files = UncivFiles(Gdx.files)
         game.musicController = MusicController()
-        game.onlineMultiplayer = OnlineMultiplayer()
+        game.onlineMultiplayer = Multiplayer()
         check(UncivGame.isCurrentInitialized()) { "UncivGame.Current not set" }
     }
 
@@ -396,7 +396,7 @@ object AgentBridge {
                 } catch (_: Throwable) {
                     unit.name.contains("Settler", ignoreCase = true)
                 }
-                if (hasFoundAbility && unit.currentTile.canBeSettled()) {
+                if (hasFoundAbility && unit.currentTile.canBeSettled(playerCiv)) {
                     val a = JSONObject()
                     a.put("tool", "found_city")
                     val args = JSONObject()
@@ -411,11 +411,11 @@ object AgentBridge {
                 unit.movement.getReachableTilesInCurrentTurn().toList()
             } catch (_: Throwable) { emptyList() }
 
-            val currentX = unit.currentTile.position.x.toInt()
-            val currentY = unit.currentTile.position.y.toInt()
+            val currentX = unit.currentTile.position.x
+            val currentY = unit.currentTile.position.y
             for (tile in reachable) {
-                val tx = tile.position.x.toInt()
-                val ty = tile.position.y.toInt()
+                val tx = tile.position.x
+                val ty = tile.position.y
                 if (tx == currentX && ty == currentY) continue
                 val canEndThere = try { unit.movement.canMoveTo(tile) } catch (_: Throwable) { false }
                 if (!canEndThere) continue
@@ -501,11 +501,11 @@ object AgentBridge {
         playerCiv: com.unciv.logic.civilization.Civilization,
         enemyUnitIds: List<EnemyUnitWithId>
     ): String? {
-        val tx = targetTile.position.x.toInt()
-        val ty = targetTile.position.y.toInt()
+        val tx = targetTile.position.x
+        val ty = targetTile.position.y
         for ((unit, id) in enemyUnitIds) {
-            val ux = unit.currentTile.position.x.toInt()
-            val uy = unit.currentTile.position.y.toInt()
+            val ux = unit.currentTile.position.x
+            val uy = unit.currentTile.position.y
             if (ux == tx && uy == ty && !unit.isCivilian()) return id
         }
         val city = targetTile.getCity()
@@ -555,13 +555,14 @@ object AgentBridge {
 
         // Validate build_id is a recognized construction
         val isValid = try {
-            city.cityConstructions.getConstruction(buildId) != null
+            city.cityConstructions.getConstruction(buildId)
+            true
         } catch (_: Throwable) { false }
         if (!isValid) {
             return ActionResult.Error("ILLEGAL_ID", "Build '$buildId' is not a valid construction for city '$cityId'")
         }
 
-        city.cityConstructions.currentConstructionFromQueue = buildId
+        city.cityConstructions.setCurrentConstruction(buildId)
         return ActionResult.Success()
     }
 
@@ -588,8 +589,8 @@ object AgentBridge {
 
         unit.movement.moveToTile(destTile)
         // Verify the unit actually reached the destination
-        val actualX = unit.currentTile.position.x.toInt()
-        val actualY = unit.currentTile.position.y.toInt()
+        val actualX = unit.currentTile.position.x
+        val actualY = unit.currentTile.position.y
         if (actualX != tx || actualY != ty) {
             return ActionResult.Error("ILLEGAL_MOVE", "Unit could not reach [$tx,$ty]; ended at [$actualX,$actualY]")
         }
@@ -640,12 +641,11 @@ object AgentBridge {
             return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' cannot found a city")
         }
 
-        val tile = unit.currentTile
-        if (!tile.canBeSettled()) {
-            return ActionResult.Error("ILLEGAL_MOVE", "Tile [${tile.position.x.toInt()},${tile.position.y.toInt()}] cannot be settled")
-        }
-
         val playerCiv = unit.civ
+        val tile = unit.currentTile
+        if (!tile.canBeSettled(playerCiv)) {
+            return ActionResult.Error("ILLEGAL_MOVE", "Tile [${tile.position.x},${tile.position.y}] cannot be settled")
+        }
         playerCiv.addCity(tile.position)
         unit.destroy()
         return ActionResult.Success()
@@ -876,14 +876,14 @@ object AgentBridge {
         val unitsList = playerCiv.units.getCivUnits().filter { !it.isDestroyed }.toList().sortedWith(compareBy(
             { it.civ.civName },
             { it.name },
-            { it.currentTile.position.x.toInt() },
-            { it.currentTile.position.y.toInt() }
+            { it.currentTile.position.x },
+            { it.currentTile.position.y }
         ))
         val idCounts = mutableMapOf<String, Int>()
         for (unit in unitsList) {
             val typeName = unit.name
-            val x = unit.currentTile.position.x.toInt()
-            val y = unit.currentTile.position.y.toInt()
+            val x = unit.currentTile.position.x
+            val y = unit.currentTile.position.y
             val baseId = "u:${typeName}:${x},${y}:${civName}"
             val idx = idCounts.getOrDefault(baseId, 0)
             idCounts[baseId] = idx + 1
@@ -920,8 +920,8 @@ object AgentBridge {
                     if (unit.isInvisible(playerCiv)) continue
                     val typeName = unit.name
                     val ownerName = unit.civ.civName
-                    val x = tile.position.x.toInt()
-                    val y = tile.position.y.toInt()
+                    val x = tile.position.x
+                    val y = tile.position.y
                     val baseId = "eu:${typeName}:${x},${y}:${ownerName}"
                     enemyUnits.add(baseId to unit)
                 }
@@ -929,8 +929,8 @@ object AgentBridge {
             val sorted = enemyUnits.sortedWith(compareBy(
                 { it.second.civ.civName },
                 { it.second.name },
-                { it.second.currentTile.position.x.toInt() },
-                { it.second.currentTile.position.y.toInt() }
+                { it.second.currentTile.position.x },
+                { it.second.currentTile.position.y }
             ))
             val idCounts = mutableMapOf<String, Int>()
             for ((baseId, unit) in sorted) {
@@ -948,8 +948,8 @@ object AgentBridge {
                     val centerTile = city.getCenterTile()
                     if (!centerTile.isExplored(playerCiv)) continue
                     val name = city.name
-                    val x = centerTile.position.x.toInt()
-                    val y = centerTile.position.y.toInt()
+                    val x = centerTile.position.x
+                    val y = centerTile.position.y
                     val id = "ec:${name}:${x},${y}"
                     if (id == targetId) return CityCombatant(city)
                 }
@@ -1012,7 +1012,7 @@ object AgentBridge {
             c.put("position", JSONArray(listOf(x, y)))
             c.put("population", city.population.population)
             c.put("health", safeInt { city.health })
-            c.put("current_production", safeString { city.cityConstructions.currentConstructionFromQueue } ?: "")
+            c.put("current_production", safeString { city.cityConstructions.currentConstructionName() } ?: "")
             val queue = JSONArray()
             try { for (item in city.cityConstructions.constructionQueue) { queue.put(item) } } catch (_: Throwable) {}
             c.put("production_queue", queue)
@@ -1050,16 +1050,16 @@ object AgentBridge {
         val unitsList = playerCiv.units.getCivUnits().filter { !it.isDestroyed }.toList().sortedWith(compareBy(
             { it.civ.civName },
             { it.name },
-            { it.currentTile.position.x.toInt() },
-            { it.currentTile.position.y.toInt() }
+            { it.currentTile.position.x },
+            { it.currentTile.position.y }
         ))
         // Track base-id counts for uniqueness suffix
         val idCounts = mutableMapOf<String, Int>()
         for (unit in unitsList) {
             val u = JSONObject()
             val typeName = unit.name
-            val x = unit.currentTile.position.x.toInt()
-            val y = unit.currentTile.position.y.toInt()
+            val x = unit.currentTile.position.x
+            val y = unit.currentTile.position.y
             val baseId = "u:${typeName}:${x},${y}:${civName}"
             val idx = idCounts.getOrDefault(baseId, 0)
             idCounts[baseId] = idx + 1
@@ -1105,8 +1105,8 @@ object AgentBridge {
                     if (centerTile.isExplored(playerCiv)) {
                         val c = JSONObject()
                         val name = city.name
-                        val x = centerTile.position.x.toInt()
-                        val y = centerTile.position.y.toInt()
+                        val x = centerTile.position.x
+                        val y = centerTile.position.y
                         c.put("id", "ec:${name}:${x},${y}")
                         c.put("name", name)
                         c.put("owner", otherCiv.civName)
@@ -1138,8 +1138,8 @@ object AgentBridge {
                     val u = JSONObject()
                     val typeName = unit.name
                     val ownerName = unit.civ.civName
-                    val x = tile.position.x.toInt()
-                    val y = tile.position.y.toInt()
+                    val x = tile.position.x
+                    val y = tile.position.y
                     val baseId = "eu:${typeName}:${x},${y}:${ownerName}"
                     u.put("owner", ownerName)
                     u.put("type", typeName)
@@ -1178,11 +1178,11 @@ object AgentBridge {
         val mapObj = JSONObject()
         val tilesArr = JSONArray()
         val tileMap = gameInfo.tileMap
-        val sortedTiles = tileMap.values.sortedWith(compareBy({ it.position.x.toInt() }, { it.position.y.toInt() }))
+        val sortedTiles = tileMap.values.sortedWith(compareBy({ it.position.x }, { it.position.y }))
         for (tile in sortedTiles) {
             val t = JSONObject()
-            t.put("x", tile.position.x.toInt())
-            t.put("y", tile.position.y.toInt())
+            t.put("x", tile.position.x)
+            t.put("y", tile.position.y)
             t.put("terrain", tile.baseTerrain)
             val features = JSONArray()
             try { for (f in tile.terrainFeatures.sorted()) { features.put(f) } } catch (_: Throwable) {}
@@ -1291,14 +1291,14 @@ object AgentBridge {
         val unitsList = playerCiv.units.getCivUnits().filter { !it.isDestroyed }.toList().sortedWith(compareBy(
             { it.civ.civName },
             { it.name },
-            { it.currentTile.position.x.toInt() },
-            { it.currentTile.position.y.toInt() }
+            { it.currentTile.position.x },
+            { it.currentTile.position.y }
         ))
         val idCounts = mutableMapOf<String, Int>()
         val result = mutableListOf<UnitWithId>()
         for (unit in unitsList) {
-            val x = unit.currentTile.position.x.toInt()
-            val y = unit.currentTile.position.y.toInt()
+            val x = unit.currentTile.position.x
+            val y = unit.currentTile.position.y
             val baseId = "u:${unit.name}:${x},${y}:${civName}"
             val idx = idCounts.getOrDefault(baseId, 0)
             idCounts[baseId] = idx + 1
@@ -1325,8 +1325,8 @@ object AgentBridge {
             for (unit in tile.getUnits()) {
                 if (unit.civ == playerCiv) continue
                 if (unit.isInvisible(playerCiv)) continue
-                val x = tile.position.x.toInt()
-                val y = tile.position.y.toInt()
+                val x = tile.position.x
+                val y = tile.position.y
                 val baseId = "eu:${unit.name}:${x},${y}:${unit.civ.civName}"
                 enemyUnits.add(baseId to unit)
             }
@@ -1334,8 +1334,8 @@ object AgentBridge {
         val sorted = enemyUnits.sortedWith(compareBy(
             { it.second.civ.civName },
             { it.second.name },
-            { it.second.currentTile.position.x.toInt() },
-            { it.second.currentTile.position.y.toInt() }
+            { it.second.currentTile.position.x },
+            { it.second.currentTile.position.y }
         ))
         val idCounts = mutableMapOf<String, Int>()
         val result = mutableListOf<EnemyUnitWithId>()
@@ -1349,8 +1349,8 @@ object AgentBridge {
     }
 
     private fun buildEnemyCityId(city: com.unciv.logic.city.City): String {
-        val x = city.getCenterTile().position.x.toInt()
-        val y = city.getCenterTile().position.y.toInt()
+        val x = city.getCenterTile().position.x
+        val y = city.getCenterTile().position.y
         return "ec:${city.name}:${x},${y}"
     }
 
