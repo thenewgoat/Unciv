@@ -19,6 +19,7 @@ import com.unciv.logic.battle.MapUnitCombatant
 import com.unciv.logic.battle.TargetHelper
 import com.unciv.models.ruleset.INonPerpetualConstruction
 import com.unciv.models.stats.Stat
+import com.unciv.logic.map.MapSize
 import com.unciv.logic.multiplayer.Multiplayer
 import com.unciv.ui.audio.MusicController
 import org.json.JSONArray
@@ -119,8 +120,13 @@ object AgentBridge {
         params.noBarbarians = true
         params.difficulty = difficulty
         setup.mapParameters.seed = seed
+        setup.mapParameters.mapSize = MapSize(mapSize)
+        setup.mapParameters.strategicBalance = true
 
         val gameInfo = GameStarter.startNewGame(setup)
+
+        // Lock diplomacy: AI cannot offer/accept peace or change relationships
+        gameInfo.ruleset.modOptions.uniques.add("Diplomatic relationships cannot change")
 
         // Some forks need explicit transient init
         try {

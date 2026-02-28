@@ -128,6 +128,10 @@ class CivInfoTransientCache(val civInfo: Civilization) {
                 val metCiv = entry.key
                 if (metCiv == civInfo || metCiv.isBarbarian || civInfo.diplomacy.containsKey(metCiv.civID)) continue
                 civInfo.diplomacyFunctions.makeCivilizationsMeet(metCiv)
+                // War on first contact between major civs (hostile 1v1 scenario)
+                if (civInfo.isMajorCiv() && metCiv.isMajorCiv()) {
+                    civInfo.getDiplomacyManager(metCiv)!!.declareWar()
+                }
                 if(!civInfo.isSpectator())
                     civInfo.addNotification("We have encountered [${metCiv.civName}]!",
                         entry.value.position,
