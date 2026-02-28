@@ -185,6 +185,7 @@ project(":core") {
 
     dependencies {
         "implementation"("com.badlogicgames.gdx:gdx:$gdxVersion")
+        "implementation"("com.badlogicgames.gdx:gdx-backend-headless:$gdxVersion")
         "implementation"("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
         "implementation"("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion")
 

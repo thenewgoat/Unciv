@@ -10,7 +10,6 @@ sourceSets {
     }
 }
 
-
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.JVM_1_8
@@ -19,4 +18,12 @@ kotlin {
 
 java {
     targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation("org.json:json:20231013")
 }
