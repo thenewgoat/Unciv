@@ -17,6 +17,7 @@ import com.unciv.logic.battle.Battle
 import com.unciv.logic.battle.CityCombatant
 import com.unciv.logic.battle.MapUnitCombatant
 import com.unciv.logic.battle.TargetHelper
+import com.unciv.models.ruleset.BeliefType
 import com.unciv.models.ruleset.INonPerpetualConstruction
 import com.unciv.models.stats.Stat
 import com.unciv.logic.map.MapSize
@@ -37,7 +38,7 @@ import org.json.JSONObject
  */
 object AgentBridge {
 
-    const val VERSION = "0.7.0"
+    const val VERSION = "0.8.0"
     @JvmStatic fun getVersion(): String = VERSION
 
     @Volatile private var initialized: Boolean = false
@@ -144,13 +145,14 @@ object AgentBridge {
     }
 
     /**
-     * Extract game state as a JSON string (v3).
+     * Extract game state as a JSON string (v4).
      *
      * Output schema:
      * {
      *   "global":       { turn, phase, war_state, gold, gold_per_turn, happiness, culture, culture_per_turn, faith, faith_per_turn, science_per_turn, era },
      *   "tech":         { current_research, turns_remaining, researched, available },
      *   "policies":     { adopted, available, can_adopt, culture_needed },
+     *   "religion":     { status, religion_name, beliefs, available_pantheon_beliefs, available_follower_beliefs, available_founder_beliefs, available_enhancer_beliefs, can_found_pantheon, holy_city },
      *   "cities":       [ { id, name, owner, position, population, health, current_production, production_queue, food, food_stored, turns_to_grow, production_amount, gold_yield, science_yield, culture_yield, defense, buildings, can_bombard, bombard_range } ],
      *   "units":        [ { id, owner, type, hp, movement, position, is_civilian, strength, ranged_strength, range, promotions, available_promotions, experience, is_fortified, can_attack } ],
      *   "enemy_cities": [ { id, name, owner, position, population, health, defense } ],
@@ -167,6 +169,7 @@ object AgentBridge {
         json.put("global", extractGlobal(gameInfo, playerCiv))
         json.put("tech", extractTech(playerCiv))
         json.put("policies", extractPolicies(playerCiv))
+        json.put("religion", extractReligion(playerCiv))
         json.put("cities", extractCities(playerCiv))
         json.put("units", extractUnits(playerCiv))
         json.put("enemy_cities", extractEnemyCities(playerCiv))
@@ -251,6 +254,16 @@ object AgentBridge {
                 "pillage" -> applyPillage(gameInfo, args)
                 "promote_unit" -> applyPromoteUnit(gameInfo, args)
                 "city_bombard" -> applyCityBombard(gameInfo, args)
+                "choose_pantheon" -> applyChoosePantheon(gameInfo, args)
+                "faith_purchase" -> applyFaithPurchase(gameInfo, args)
+                "build_improvement" -> applyBuildImprovement(gameInfo, args)
+                "hurry_research" -> applyHurryResearch(gameInfo, args)
+                "hurry_production" -> applyHurryProduction(gameInfo, args)
+                "hurry_policy" -> applyHurryPolicy(gameInfo, args)
+                "found_religion" -> applyFoundReligion(gameInfo, args)
+                "enhance_religion" -> applyEnhanceReligion(gameInfo, args)
+                "spread_religion" -> applySpreadReligion(gameInfo, args)
+                "remove_heresy" -> applyRemoveHeresy(gameInfo, args)
                 else -> ActionResult.Error("UNKNOWN_TOOL", "Unknown tool: '$tool'")
             }
         } catch (e: Exception) {
@@ -311,6 +324,12 @@ object AgentBridge {
         }
         try { enumerateCityBombardActions(gameInfo, playerCiv, actions) } catch (e: Throwable) {
             System.err.println("getLegalActions: city bombard enumeration failed: ${e.message}")
+        }
+        try { enumeratePantheonActions(playerCiv, actions) } catch (e: Throwable) {
+            System.err.println("getLegalActions: pantheon enumeration failed: ${e.message}")
+        }
+        try { enumerateFaithPurchaseActions(playerCiv, actions) } catch (e: Throwable) {
+            System.err.println("getLegalActions: faith purchase enumeration failed: ${e.message}")
         }
 
         // end_turn is always legal
@@ -499,6 +518,178 @@ object AgentBridge {
                     }
                 } catch (_: Throwable) {}
             }
+
+            // --- Great Person + Religion unit actions (v0.8.0) ---
+            // These apply to civilian GP units, so must be outside the !isCivilian() block
+
+            // --- build_improvement ---
+            try {
+                val hasImproveAbility = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.ConstructImprovementInstantly
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.ConstructImprovementInstantly
+                ).any()
+                if (hasImproveAbility) {
+                    val a = JSONObject()
+                    a.put("tool", "build_improvement")
+                    val args = JSONObject()
+                    args.put("unit_id", unitId)
+                    a.put("args", args)
+                    actions.put(a)
+                }
+            } catch (_: Throwable) {}
+
+            // --- hurry_research ---
+            try {
+                val hasHurryResearch = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanHurryResearch
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanHurryResearch
+                ).any()
+                if (hasHurryResearch && playerCiv.tech.currentTechnologyName() != null) {
+                    val a = JSONObject()
+                    a.put("tool", "hurry_research")
+                    val args = JSONObject()
+                    args.put("unit_id", unitId)
+                    a.put("args", args)
+                    actions.put(a)
+                }
+            } catch (_: Throwable) {}
+
+            // --- hurry_production ---
+            try {
+                val hasHurryProd = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanSpeedupConstruction
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanSpeedupConstruction
+                ).any() || unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanSpeedupWonderConstruction
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanSpeedupWonderConstruction
+                ).any()
+                if (hasHurryProd && unit.currentTile.isCityCenter()) {
+                    val city = unit.currentTile.getCity()
+                    if (city != null) {
+                        val canHurry = try { city.cityConstructions.canBeHurried() } catch (_: Throwable) { false }
+                        if (canHurry) {
+                            val a = JSONObject()
+                            a.put("tool", "hurry_production")
+                            val args = JSONObject()
+                            args.put("unit_id", unitId)
+                            a.put("args", args)
+                            actions.put(a)
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            // --- hurry_policy ---
+            try {
+                val hasHurryPolicy = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanHurryPolicy
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanHurryPolicy
+                ).any()
+                if (hasHurryPolicy) {
+                    val a = JSONObject()
+                    a.put("tool", "hurry_policy")
+                    val args = JSONObject()
+                    args.put("unit_id", unitId)
+                    a.put("args", args)
+                    actions.put(a)
+                }
+            } catch (_: Throwable) {}
+
+            // --- found_religion ---
+            try {
+                val hasFoundRel = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.MayFoundReligion
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.MayFoundReligion
+                ).any()
+                if (hasFoundRel) {
+                    val rm = playerCiv.religionManager
+                    val canFound = try { rm.mayFoundReligionAtAll() } catch (_: Throwable) { false }
+                    val canFoundHere = try { rm.mayFoundReligionHere(unit.currentTile) } catch (_: Throwable) { false }
+                    if (canFound && canFoundHere) {
+                        val a = JSONObject()
+                        a.put("tool", "found_religion")
+                        val args = JSONObject()
+                        args.put("unit_id", unitId)
+                        a.put("args", args)
+                        actions.put(a)
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            // --- enhance_religion ---
+            try {
+                val hasEnhanceRel = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.MayEnhanceReligion
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.MayEnhanceReligion
+                ).any()
+                if (hasEnhanceRel) {
+                    val rm = playerCiv.religionManager
+                    val canEnhance = try { rm.mayEnhanceReligionAtAll() } catch (_: Throwable) { false }
+                    val canEnhanceHere = try { rm.mayEnhanceReligionHere(unit.currentTile) } catch (_: Throwable) { false }
+                    if (canEnhance && canEnhanceHere) {
+                        val a = JSONObject()
+                        a.put("tool", "enhance_religion")
+                        val args = JSONObject()
+                        args.put("unit_id", unitId)
+                        a.put("args", args)
+                        actions.put(a)
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            // --- spread_religion ---
+            try {
+                val hasSpread = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanSpreadReligion
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanSpreadReligion
+                ).any()
+                if (hasSpread && unit.religion != null) {
+                    val canSpread = try { playerCiv.religionManager.maySpreadReligionNow(unit) } catch (_: Throwable) { false }
+                    if (canSpread) {
+                        val a = JSONObject()
+                        a.put("tool", "spread_religion")
+                        val args = JSONObject()
+                        args.put("unit_id", unitId)
+                        a.put("args", args)
+                        actions.put(a)
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            // --- remove_heresy ---
+            try {
+                val hasRemoveHeresy = unit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanRemoveHeresy
+                ).any() || unit.baseUnit.getMatchingUniques(
+                    com.unciv.models.ruleset.unique.UniqueType.CanRemoveHeresy
+                ).any()
+                if (hasRemoveHeresy && unit.religion != null) {
+                    val tile = unit.currentTile
+                    val city = tile.getCity()
+                    if (city != null && city.civ == unit.civ) {
+                        // Check city has other religions
+                        val hasOtherPressure = try {
+                            city.religion.getPressures().any { it.key != unit.religion && it.key != "None" && it.value > 0 }
+                        } catch (_: Throwable) { false }
+                        if (hasOtherPressure) {
+                            val a = JSONObject()
+                            a.put("tool", "remove_heresy")
+                            val args = JSONObject()
+                            args.put("unit_id", unitId)
+                            a.put("args", args)
+                            actions.put(a)
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
         }
     }
 
@@ -781,6 +972,357 @@ object AgentBridge {
         return ActionResult.Success()
     }
 
+    // ── New apply* methods (v0.8.0 — GP + Religion) ────────────────
+
+    private fun applyChoosePantheon(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val beliefId = args.optString("belief_id", "")
+        if (beliefId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "choose_pantheon requires 'belief_id'")
+        val playerCiv = gameInfo.civilizations.firstOrNull { it.playerType == PlayerType.Human }
+            ?: return ActionResult.Error("ENGINE_ERROR", "No human player found")
+        val rm = playerCiv.religionManager
+        val canPantheon = try { rm.canFoundOrExpandPantheon() } catch (_: Throwable) { false }
+        if (!canPantheon) return ActionResult.Error("ILLEGAL_PANTHEON", "Cannot found or expand pantheon")
+        val belief = gameInfo.ruleset.beliefs[beliefId]
+            ?: return ActionResult.Error("ILLEGAL_ID", "Belief '$beliefId' not found in ruleset")
+        if (belief.type != BeliefType.Pantheon)
+            return ActionResult.Error("ILLEGAL_PANTHEON", "Belief '$beliefId' is not a Pantheon belief")
+        // Check belief is not already taken by another religion
+        val taken = gameInfo.religions.values.any { it.hasBelief(beliefId) }
+        if (taken) return ActionResult.Error("ILLEGAL_PANTHEON", "Belief '$beliefId' is already taken")
+        try {
+            rm.chooseBeliefs(listOf(belief))
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Pantheon failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyFaithPurchase(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val cityId = args.optString("city_id", "")
+        val buildId = args.optString("build_id", "")
+        if (cityId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "faith_purchase requires 'city_id'")
+        if (buildId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "faith_purchase requires 'build_id'")
+        val city = resolvePlayerCity(gameInfo, cityId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "City '$cityId' not found")
+        val playerCiv = city.civ
+        val construction = try { city.cityConstructions.getConstruction(buildId) } catch (_: Throwable) { null }
+            ?: return ActionResult.Error("ILLEGAL_ID", "Build '$buildId' not found")
+        val nonPerpetual = construction as? INonPerpetualConstruction
+            ?: return ActionResult.Error("ILLEGAL_FAITH_PURCHASE", "Build '$buildId' cannot be purchased")
+        val canBuyWithFaith = try { nonPerpetual.canBePurchasedWithStat(city, Stat.Faith) } catch (_: Throwable) { false }
+        if (!canBuyWithFaith) return ActionResult.Error("ILLEGAL_FAITH_PURCHASE", "Build '$buildId' cannot be purchased with faith")
+        val cost = try { nonPerpetual.getStatBuyCost(city, Stat.Faith) ?: Int.MAX_VALUE } catch (_: Throwable) { Int.MAX_VALUE }
+        val faith = try { playerCiv.religionManager.storedFaith } catch (_: Throwable) { 0 }
+        if (faith < cost) return ActionResult.Error("ILLEGAL_FAITH_PURCHASE", "Not enough faith ($faith < $cost)")
+        try {
+            city.cityConstructions.purchaseConstruction(buildId, -1, false, Stat.Faith)
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Faith purchase failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyBuildImprovement(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "build_improvement requires 'unit_id'")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit has no movement")
+        // Find the ConstructImprovementInstantly unique on this unit
+        val unique = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.ConstructImprovementInstantly).firstOrNull()
+                ?: unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.ConstructImprovementInstantly).firstOrNull()
+        } catch (_: Throwable) { null }
+            ?: return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit '$unitId' cannot build improvements")
+        // Extract improvement name from the unique's filter parameter
+        val improvementFilter = unique.params.firstOrNull() ?: ""
+        val improvement = gameInfo.ruleset.tileImprovements.values.firstOrNull {
+            it.matchesFilter(improvementFilter)
+        } ?: return ActionResult.Error("ILLEGAL_GP_ACTION", "No matching improvement for filter '$improvementFilter'")
+        val tile = unit.currentTile
+        val canBuild = try {
+            tile.improvementFunctions.canBuildImprovement(improvement, unit.cache.state)
+        } catch (_: Throwable) { false }
+        if (!canBuild) return ActionResult.Error("ILLEGAL_GP_ACTION", "Cannot build '${improvement.name}' on current tile")
+        try {
+            tile.setImprovement(improvement.name, unit.civ, unit)
+            unit.consume()
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Build improvement failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyHurryResearch(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "hurry_research requires 'unit_id'")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanHurryResearch).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanHurryResearch).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit '$unitId' cannot hurry research")
+        val tm = unit.civ.tech
+        if (tm.currentTechnologyName() == null)
+            return ActionResult.Error("ILLEGAL_GP_ACTION", "No technology currently being researched")
+        try {
+            tm.addScience(tm.getScienceFromGreatScientist())
+            unit.consume()
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Hurry research failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyHurryProduction(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "hurry_production requires 'unit_id'")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpeedupConstruction).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpeedupConstruction).any()
+                || unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpeedupWonderConstruction).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpeedupWonderConstruction).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit '$unitId' cannot hurry production")
+        val tile = unit.currentTile
+        if (!tile.isCityCenter())
+            return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit must be on a city center to hurry production")
+        val city = tile.getCity()
+            ?: return ActionResult.Error("ILLEGAL_GP_ACTION", "No city on current tile")
+        val cc = city.cityConstructions
+        val canHurry = try { cc.canBeHurried() } catch (_: Throwable) { false }
+        if (!canHurry) return ActionResult.Error("ILLEGAL_GP_ACTION", "Current construction cannot be hurried")
+        try {
+            val remaining = cc.getRemainingWork(cc.currentConstructionName()).toFloat()
+            val productionPoints = minOf(
+                (300 + 30 * city.population.population) * gameInfo.speed.productionCostModifier,
+                remaining - 1
+            ).toInt()
+            if (productionPoints > 0) {
+                cc.addProductionPoints(productionPoints)
+                cc.constructIfEnough()
+            }
+            unit.consume()
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Hurry production failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyHurryPolicy(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "hurry_policy requires 'unit_id'")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanHurryPolicy).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanHurryPolicy).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_GP_ACTION", "Unit '$unitId' cannot hurry policy")
+        try {
+            unit.civ.policies.addCulture(unit.civ.policies.getCultureFromGreatWriter())
+            unit.consume()
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Hurry policy failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyFoundReligion(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "found_religion requires 'unit_id'")
+        val religionName = args.optString("religion_name", "")
+        if (religionName.isEmpty()) return ActionResult.Error("MISSING_ARGS", "found_religion requires 'religion_name'")
+        val beliefsArr = args.optJSONArray("beliefs")
+        if (beliefsArr == null || beliefsArr.length() == 0)
+            return ActionResult.Error("MISSING_ARGS", "found_religion requires 'beliefs' array")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_RELIGION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.MayFoundReligion).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.MayFoundReligion).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_RELIGION", "Unit '$unitId' cannot found a religion")
+        val rm = unit.civ.religionManager
+        val canFound = try { rm.mayFoundReligionAtAll() } catch (_: Throwable) { false }
+        if (!canFound) return ActionResult.Error("ILLEGAL_RELIGION", "Cannot found religion")
+        val canFoundHere = try { rm.mayFoundReligionHere(unit.currentTile) } catch (_: Throwable) { false }
+        if (!canFoundHere) return ActionResult.Error("ILLEGAL_RELIGION", "Cannot found religion on current tile")
+        // Validate religion_name is an available religion icon key
+        val availableReligions = gameInfo.ruleset.religions.filter { it !in gameInfo.religions.keys }
+        if (religionName !in availableReligions)
+            return ActionResult.Error("ILLEGAL_RELIGION", "Religion name '$religionName' is not available")
+        // Resolve belief objects
+        val beliefNames = (0 until beliefsArr.length()).map { beliefsArr.getString(it) }
+        val beliefs = mutableListOf<com.unciv.models.ruleset.Belief>()
+        for (name in beliefNames) {
+            val belief = gameInfo.ruleset.beliefs[name]
+                ?: return ActionResult.Error("ILLEGAL_ID", "Belief '$name' not found in ruleset")
+            beliefs.add(belief)
+        }
+        try {
+            // Step 1: Use prophet — sets state to FoundingReligion
+            rm.foundReligion(unit)
+            // Step 2: Create the religion with name
+            rm.foundReligion(religionName, religionName)
+            // Step 3: Add beliefs and transition to Religion state
+            rm.chooseBeliefs(beliefs)
+            // Step 4: Consume the prophet unit
+            unit.consume()
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Found religion failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyEnhanceReligion(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "enhance_religion requires 'unit_id'")
+        val beliefsArr = args.optJSONArray("beliefs")
+        if (beliefsArr == null || beliefsArr.length() == 0)
+            return ActionResult.Error("MISSING_ARGS", "enhance_religion requires 'beliefs' array")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_RELIGION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.MayEnhanceReligion).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.MayEnhanceReligion).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_RELIGION", "Unit '$unitId' cannot enhance religion")
+        val rm = unit.civ.religionManager
+        val canEnhance = try { rm.mayEnhanceReligionAtAll() } catch (_: Throwable) { false }
+        if (!canEnhance) return ActionResult.Error("ILLEGAL_RELIGION", "Cannot enhance religion")
+        val canEnhanceHere = try { rm.mayEnhanceReligionHere(unit.currentTile) } catch (_: Throwable) { false }
+        if (!canEnhanceHere) return ActionResult.Error("ILLEGAL_RELIGION", "Cannot enhance religion on current tile")
+        // Resolve beliefs
+        val beliefNames = (0 until beliefsArr.length()).map { beliefsArr.getString(it) }
+        val beliefs = mutableListOf<com.unciv.models.ruleset.Belief>()
+        for (name in beliefNames) {
+            val belief = gameInfo.ruleset.beliefs[name]
+                ?: return ActionResult.Error("ILLEGAL_ID", "Belief '$name' not found in ruleset")
+            beliefs.add(belief)
+        }
+        try {
+            // Step 1: Use prophet — sets state to EnhancingReligion
+            rm.useProphetForEnhancingReligion(unit)
+            // Step 2: Add beliefs and transition to EnhancedReligion state
+            rm.chooseBeliefs(beliefs)
+            // Step 3: Consume the prophet unit
+            unit.consume()
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Enhance religion failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applySpreadReligion(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "spread_religion requires 'unit_id'")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_RELIGION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpreadReligion).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpreadReligion).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_RELIGION", "Unit '$unitId' cannot spread religion")
+        val unitReligion = unit.religion
+        if (unitReligion == null) return ActionResult.Error("ILLEGAL_RELIGION", "Unit has no religion to spread")
+        val rm = unit.civ.religionManager
+        val canSpread = try { rm.maySpreadReligionNow(unit) } catch (_: Throwable) { false }
+        if (!canSpread) return ActionResult.Error("ILLEGAL_RELIGION", "Cannot spread religion here")
+        val tile = unit.currentTile
+        val city = tile.getCity()
+            ?: return ActionResult.Error("ILLEGAL_RELIGION", "No city on current tile")
+        try {
+            // Calculate pressure to add (base religiousStrength * modifiers)
+            var pressure = unit.baseUnit.religiousStrength.toFloat()
+            for (unique in unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.SpreadReligionStrength, checkCivInfoUniques = true)) {
+                pressure *= unique.params[0].toFloat() / 100f
+            }
+            city.religion.addPressure(unitReligion, pressure.toInt())
+            // Consume movement and handle charges
+            unit.currentMovement = 0f
+            // Decrement charges via abilityToTimesUsed
+            val spreadUnique = unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanSpreadReligion).firstOrNull()
+            if (spreadUnique != null) {
+                val key = spreadUnique.text.replace(Regex("\\s*<.*?>\\s*"), "").trim()
+                val usages = unit.abilityToTimesUsed.getOrDefault(key, 0)
+                unit.abilityToTimesUsed[key] = usages + 1
+                // Check if unit should be consumed (all charges used)
+                val maxUses = try {
+                    spreadUnique.modifiers.firstOrNull {
+                        it.type == com.unciv.models.ruleset.unique.UniqueType.UnitActionLimitedTimes
+                    }?.params?.get(0)?.toIntOrNull() ?: 1
+                } catch (_: Throwable) { 1 }
+                if (usages + 1 >= maxUses) unit.consume()
+            } else {
+                unit.consume()
+            }
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Spread religion failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
+    private fun applyRemoveHeresy(gameInfo: GameInfo, args: JSONObject): ActionResult {
+        val unitId = args.optString("unit_id", "")
+        if (unitId.isEmpty()) return ActionResult.Error("MISSING_ARGS", "remove_heresy requires 'unit_id'")
+        val unit = resolvePlayerUnit(gameInfo, unitId)
+            ?: return ActionResult.Error("ILLEGAL_ID", "Unit '$unitId' not found")
+        if (unit.currentMovement <= 0f) return ActionResult.Error("ILLEGAL_RELIGION", "Unit has no movement")
+        val hasAbility = try {
+            unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanRemoveHeresy).any()
+                || unit.baseUnit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanRemoveHeresy).any()
+        } catch (_: Throwable) { false }
+        if (!hasAbility) return ActionResult.Error("ILLEGAL_RELIGION", "Unit '$unitId' cannot remove heresy")
+        val unitReligion = unit.religion
+        if (unitReligion == null) return ActionResult.Error("ILLEGAL_RELIGION", "Unit has no religion")
+        val tile = unit.currentTile
+        val city = tile.getCity()
+            ?: return ActionResult.Error("ILLEGAL_RELIGION", "No city on current tile")
+        if (city.civ != unit.civ)
+            return ActionResult.Error("ILLEGAL_RELIGION", "Can only remove heresy in own cities")
+        try {
+            city.religion.removeAllPressuresExceptFor(unitReligion)
+            // Handle holy city blocking
+            if (city.religion.religionThisIsTheHolyCityOf != null) {
+                val holyCityReligionName = city.religion.religionThisIsTheHolyCityOf!!
+                if (holyCityReligionName != unitReligion && !city.religion.isBlockedHolyCity) {
+                    city.religion.isBlockedHolyCity = true
+                } else if (holyCityReligionName == unitReligion && city.religion.isBlockedHolyCity) {
+                    city.religion.isBlockedHolyCity = false
+                }
+            }
+            unit.currentMovement = 0f
+            // Decrement charges
+            val heresyUnique = unit.getMatchingUniques(com.unciv.models.ruleset.unique.UniqueType.CanRemoveHeresy).firstOrNull()
+            if (heresyUnique != null) {
+                val key = heresyUnique.text.replace(Regex("\\s*<.*?>\\s*"), "").trim()
+                val usages = unit.abilityToTimesUsed.getOrDefault(key, 0)
+                unit.abilityToTimesUsed[key] = usages + 1
+                val maxUses = try {
+                    heresyUnique.modifiers.firstOrNull {
+                        it.type == com.unciv.models.ruleset.unique.UniqueType.UnitActionLimitedTimes
+                    }?.params?.get(0)?.toIntOrNull() ?: 1
+                } catch (_: Throwable) { 1 }
+                if (usages + 1 >= maxUses) unit.consume()
+            } else {
+                unit.consume()
+            }
+        } catch (e: Throwable) {
+            return ActionResult.Error("ENGINE_ERROR", "Remove heresy failed: ${e.message}")
+        }
+        return ActionResult.Success()
+    }
+
     // ── New enumerators (v0.6.0) ───────────────────────────────────
 
     private fun enumeratePolicyActions(
@@ -869,6 +1411,75 @@ object AgentBridge {
                     actions.put(a)
                 }
             }
+        }
+    }
+
+    // ── New enumerators (v0.8.0 — Pantheon + Faith purchase) ───────
+
+    private fun enumeratePantheonActions(
+        playerCiv: com.unciv.logic.civilization.Civilization, actions: JSONArray
+    ) {
+        val rm = playerCiv.religionManager
+        val canPantheon = try { rm.canFoundOrExpandPantheon() } catch (_: Throwable) { false }
+        if (!canPantheon) return
+        val gameInfo = playerCiv.gameInfo
+        // Enumerate available pantheon beliefs (not taken by any religion)
+        val takenBeliefs = gameInfo.religions.values.flatMap { r ->
+            try { r.getAllBeliefsOrdered().map { it.name }.toList() } catch (_: Throwable) { emptyList() }
+        }.toSet()
+        for (belief in gameInfo.ruleset.beliefs.values.filter {
+            it.type == BeliefType.Pantheon && it.name !in takenBeliefs
+        }.sortedBy { it.name }) {
+            val a = JSONObject()
+            a.put("tool", "choose_pantheon")
+            val args = JSONObject()
+            args.put("belief_id", belief.name)
+            a.put("args", args)
+            actions.put(a)
+        }
+    }
+
+    private fun enumerateFaithPurchaseActions(
+        playerCiv: com.unciv.logic.civilization.Civilization, actions: JSONArray
+    ) {
+        val faith = try { playerCiv.religionManager.storedFaith } catch (_: Throwable) { 0 }
+        if (faith <= 0) return
+        for (city in playerCiv.cities.sortedWith(compareBy({ it.civ.civName }, { it.name }))) {
+            val cityId = buildCityId(city)
+            try {
+                val constructions = city.cityConstructions
+                val ruleset = playerCiv.gameInfo.ruleset
+                for (unit in ruleset.units.values) {
+                    val canBuy = try { unit.canBePurchasedWithStat(city, Stat.Faith) } catch (_: Throwable) { false }
+                    if (canBuy) {
+                        val cost = try { unit.getStatBuyCost(city, Stat.Faith) ?: Int.MAX_VALUE } catch (_: Throwable) { Int.MAX_VALUE }
+                        if (faith >= cost) {
+                            val a = JSONObject()
+                            a.put("tool", "faith_purchase")
+                            val args = JSONObject()
+                            args.put("city_id", cityId)
+                            args.put("build_id", unit.name)
+                            a.put("args", args)
+                            actions.put(a)
+                        }
+                    }
+                }
+                for (building in ruleset.buildings.values) {
+                    val canBuy = try { building.canBePurchasedWithStat(city, Stat.Faith) } catch (_: Throwable) { false }
+                    if (canBuy) {
+                        val cost = try { building.getStatBuyCost(city, Stat.Faith) ?: Int.MAX_VALUE } catch (_: Throwable) { Int.MAX_VALUE }
+                        if (faith >= cost) {
+                            val a = JSONObject()
+                            a.put("tool", "faith_purchase")
+                            val args = JSONObject()
+                            args.put("city_id", cityId)
+                            args.put("build_id", building.name)
+                            a.put("args", args)
+                            actions.put(a)
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
         }
     }
 
@@ -1278,6 +1889,83 @@ object AgentBridge {
         } catch (_: Throwable) {}
         tech.put("available", available)
         return tech
+    }
+
+    private fun extractReligion(playerCiv: com.unciv.logic.civilization.Civilization?): JSONObject {
+        val rel = JSONObject()
+        if (playerCiv == null) {
+            rel.put("status", "None")
+            rel.put("religion_name", JSONObject.NULL)
+            rel.put("beliefs", JSONArray())
+            rel.put("available_pantheon_beliefs", JSONArray())
+            rel.put("available_follower_beliefs", JSONArray())
+            rel.put("available_founder_beliefs", JSONArray())
+            rel.put("available_enhancer_beliefs", JSONArray())
+            rel.put("can_found_pantheon", false)
+            rel.put("holy_city", JSONObject.NULL)
+            return rel
+        }
+        val rm = playerCiv.religionManager
+        val gameInfo = playerCiv.gameInfo
+
+        // Status
+        val status = try { rm.religionState.name } catch (_: Throwable) { "None" }
+        rel.put("status", status)
+
+        // Religion name and beliefs
+        val religion = rm.religion
+        if (religion != null) {
+            val displayName = try { religion.displayName ?: religion.name } catch (_: Throwable) { religion.name }
+            rel.put("religion_name", displayName)
+            val beliefs = JSONArray()
+            try {
+                for (b in religion.getAllBeliefsOrdered().map { it.name }.toList().sorted()) {
+                    beliefs.put(b)
+                }
+            } catch (_: Throwable) {}
+            rel.put("beliefs", beliefs)
+        } else {
+            rel.put("religion_name", JSONObject.NULL)
+            rel.put("beliefs", JSONArray())
+        }
+
+        // Available beliefs by type (for when the agent needs to choose)
+        val takenBeliefs = try {
+            gameInfo.religions.values.flatMap { r ->
+                r.getAllBeliefsOrdered().map { it.name }.toList()
+            }.toSet()
+        } catch (_: Throwable) { emptySet() }
+
+        val pantheonBeliefs = JSONArray()
+        val followerBeliefs = JSONArray()
+        val founderBeliefs = JSONArray()
+        val enhancerBeliefs = JSONArray()
+        try {
+            for (belief in gameInfo.ruleset.beliefs.values.sortedBy { it.name }) {
+                if (belief.name in takenBeliefs) continue
+                when (belief.type) {
+                    BeliefType.Pantheon -> pantheonBeliefs.put(belief.name)
+                    BeliefType.Follower -> followerBeliefs.put(belief.name)
+                    BeliefType.Founder -> founderBeliefs.put(belief.name)
+                    BeliefType.Enhancer -> enhancerBeliefs.put(belief.name)
+                    else -> {}
+                }
+            }
+        } catch (_: Throwable) {}
+        rel.put("available_pantheon_beliefs", pantheonBeliefs)
+        rel.put("available_follower_beliefs", followerBeliefs)
+        rel.put("available_founder_beliefs", founderBeliefs)
+        rel.put("available_enhancer_beliefs", enhancerBeliefs)
+
+        // Can found pantheon
+        val canPantheon = try { rm.canFoundOrExpandPantheon() } catch (_: Throwable) { false }
+        rel.put("can_found_pantheon", canPantheon)
+
+        // Holy city
+        val holyCity = try { rm.getHolyCity()?.name } catch (_: Throwable) { null }
+        rel.put("holy_city", holyCity ?: JSONObject.NULL)
+
+        return rel
     }
 
     @JvmStatic fun advanceToNextTurn(gameInfo: GameInfo): GameInfo {
