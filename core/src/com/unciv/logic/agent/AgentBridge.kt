@@ -524,18 +524,26 @@ object AgentBridge {
 
             // --- build_improvement ---
             try {
-                val hasImproveAbility = unit.getMatchingUniques(
+                val improvUnique = unit.getMatchingUniques(
                     com.unciv.models.ruleset.unique.UniqueType.ConstructImprovementInstantly
-                ).any() || unit.baseUnit.getMatchingUniques(
+                ).firstOrNull() ?: unit.baseUnit.getMatchingUniques(
                     com.unciv.models.ruleset.unique.UniqueType.ConstructImprovementInstantly
-                ).any()
-                if (hasImproveAbility) {
-                    val a = JSONObject()
-                    a.put("tool", "build_improvement")
-                    val args = JSONObject()
-                    args.put("unit_id", unitId)
-                    a.put("args", args)
-                    actions.put(a)
+                ).firstOrNull()
+                if (improvUnique != null) {
+                    val improvementFilter = improvUnique.params.firstOrNull() ?: ""
+                    val improvement = gameInfo.ruleset.tileImprovements.values.firstOrNull {
+                        it.matchesFilter(improvementFilter)
+                    }
+                    val canBuild = improvement != null && unit.currentTile.improvementFunctions
+                        .canBuildImprovement(improvement, unit.cache.state)
+                    if (canBuild) {
+                        val a = JSONObject()
+                        a.put("tool", "build_improvement")
+                        val args = JSONObject()
+                        args.put("unit_id", unitId)
+                        a.put("args", args)
+                        actions.put(a)
+                    }
                 }
             } catch (_: Throwable) {}
 
@@ -612,12 +620,23 @@ object AgentBridge {
                     val canFound = try { rm.mayFoundReligionAtAll() } catch (_: Throwable) { false }
                     val canFoundHere = try { rm.mayFoundReligionHere(unit.currentTile) } catch (_: Throwable) { false }
                     if (canFound && canFoundHere) {
-                        val a = JSONObject()
-                        a.put("tool", "found_religion")
-                        val args = JSONObject()
-                        args.put("unit_id", unitId)
-                        a.put("args", args)
-                        actions.put(a)
+                        val availableReligions = gameInfo.ruleset.religions
+                            .filter { it !in gameInfo.religions.keys }
+                        val defaultName = availableReligions.firstOrNull()
+                        val defaultBeliefs = if (defaultName != null)
+                            pickDefaultBeliefs(gameInfo, rm.getBeliefsToChooseAtFounding()) else null
+                        if (defaultName != null && defaultBeliefs != null) {
+                            val a = JSONObject()
+                            a.put("tool", "found_religion")
+                            val args = JSONObject()
+                            args.put("unit_id", unitId)
+                            args.put("religion_name", defaultName)
+                            val beliefsArr = JSONArray()
+                            for (b in defaultBeliefs) beliefsArr.put(b)
+                            args.put("beliefs", beliefsArr)
+                            a.put("args", args)
+                            actions.put(a)
+                        }
                     }
                 }
             } catch (_: Throwable) {}
@@ -634,12 +653,18 @@ object AgentBridge {
                     val canEnhance = try { rm.mayEnhanceReligionAtAll() } catch (_: Throwable) { false }
                     val canEnhanceHere = try { rm.mayEnhanceReligionHere(unit.currentTile) } catch (_: Throwable) { false }
                     if (canEnhance && canEnhanceHere) {
-                        val a = JSONObject()
-                        a.put("tool", "enhance_religion")
-                        val args = JSONObject()
-                        args.put("unit_id", unitId)
-                        a.put("args", args)
-                        actions.put(a)
+                        val defaultBeliefs = pickDefaultBeliefs(gameInfo, rm.getBeliefsToChooseAtEnhancing())
+                        if (defaultBeliefs != null) {
+                            val a = JSONObject()
+                            a.put("tool", "enhance_religion")
+                            val args = JSONObject()
+                            args.put("unit_id", unitId)
+                            val beliefsArr = JSONArray()
+                            for (b in defaultBeliefs) beliefsArr.put(b)
+                            args.put("beliefs", beliefsArr)
+                            a.put("args", args)
+                            actions.put(a)
+                        }
                     }
                 }
             } catch (_: Throwable) {}
@@ -705,11 +730,49 @@ object AgentBridge {
             val uy = unit.currentTile.position.y
             if (ux == tx && uy == ty && !unit.isCivilian()) return id
         }
-        val city = targetTile.getCity()
-        if (city != null && city.civ != playerCiv) {
-            return buildEnemyCityId(city)
+        // Use civ-iteration to find enemy cities (consistent with resolveTarget).
+        // Avoids stale tile.getCity() references for razed cities.
+        for (otherCiv in playerCiv.getKnownCivs()) {
+            if (otherCiv == playerCiv) continue
+            for (city in otherCiv.cities) {
+                val centerTile = city.getCenterTile()
+                if (!centerTile.isExplored(playerCiv)) continue
+                if (centerTile.position.x == tx && centerTile.position.y == ty) {
+                    return buildEnemyCityId(city)
+                }
+            }
         }
         return null
+    }
+
+    // ── Enumeration helpers ──────────────────────────────────────────
+
+    /**
+     * Pick one default belief name per required type from the ruleset,
+     * excluding beliefs already claimed by any religion.
+     * Returns null if not enough beliefs are available.
+     */
+    private fun pickDefaultBeliefs(
+        gameInfo: GameInfo,
+        beliefsNeeded: com.unciv.models.Counter<com.unciv.models.ruleset.BeliefType>
+    ): List<String>? {
+        val takenBeliefs = gameInfo.religions.values
+            .flatMap { try { it.getAllBeliefsOrdered().toList() } catch (_: Throwable) { emptyList() } }
+            .map { it.name }.toSet()
+        val chosen = mutableListOf<String>()
+        for (type in com.unciv.models.ruleset.BeliefType.entries) {
+            if (type == com.unciv.models.ruleset.BeliefType.None) continue
+            val count = beliefsNeeded[type]
+            if (count <= 0) continue
+            val available = gameInfo.ruleset.beliefs.values.filter { b ->
+                (b.type == type || type == com.unciv.models.ruleset.BeliefType.Any) &&
+                b.type != com.unciv.models.ruleset.BeliefType.None &&
+                b.name !in takenBeliefs && b.name !in chosen
+            }
+            if (available.size < count) return null
+            chosen.addAll(available.take(count).map { it.name })
+        }
+        return if (chosen.isEmpty()) null else chosen
     }
 
     // ── Action helpers ────────────────────────────────────────────────
@@ -785,12 +848,9 @@ object AgentBridge {
         }
 
         unit.movement.moveToTile(destTile)
-        // Verify the unit actually reached the destination
-        val actualX = unit.currentTile.position.x
-        val actualY = unit.currentTile.position.y
-        if (actualX != tx || actualY != ty) {
-            return ActionResult.Error("ILLEGAL_MOVE", "Unit could not reach [$tx,$ty]; ended at [$actualX,$actualY]")
-        }
+        // Partial moves are treated as success because game state changed
+        // (the unit position updated). The agent will observe the new position
+        // in the next observation and can decide further movement.
         return ActionResult.Success()
     }
 

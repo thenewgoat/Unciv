@@ -398,7 +398,11 @@ class GameInfo : IsPartOfGameInfoSerialization, HasGameInfoSerializationVersion 
             TurnManager(player).startTurn(progressBar)
 
             // Automation done here
-            TurnManager(player).automateTurn()
+            try {
+                TurnManager(player).automateTurn()
+            } catch (e: Exception) {
+                System.err.println("nextTurn: AI automation failed for ${player.civName}: ${e.message}")
+            }
 
             val worldScreen = UncivGame.Current.worldScreen
             // Do we need to break if player won?
