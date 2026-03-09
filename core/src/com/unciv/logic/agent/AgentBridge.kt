@@ -38,7 +38,7 @@ import org.json.JSONObject
  */
 object AgentBridge {
 
-    const val VERSION = "0.8.0"
+    const val VERSION = "0.9.0"  // Added notification extraction
     @JvmStatic fun getVersion(): String = VERSION
 
     @Volatile private var initialized: Boolean = false
@@ -158,7 +158,7 @@ object AgentBridge {
      *   "enemy_cities": [ { id, name, owner, position, population, health, defense } ],
      *   "enemy_units":  [ { id, owner, type, hp, movement, position, is_civilian, strength, ranged_strength, range, is_fortified } ],
      *   "map":          { width, height, tiles: [ { x, y, terrain, terrain_features, resource, owner, visible, explored, improvement, road, pillaged } ] },
-     *   "events":       []
+     *   "events":       [ { type, text, icons } ]
      * }
      */
     @JvmStatic fun extractState(gameInfo: GameInfo): String {
@@ -175,8 +175,33 @@ object AgentBridge {
         json.put("enemy_cities", extractEnemyCities(playerCiv))
         json.put("enemy_units", extractEnemyUnits(playerCiv))
         json.put("map", extractMap(gameInfo, playerCiv))
-        json.put("events", JSONArray())
+        json.put("events", extractNotifications(playerCiv))
         return json.toString()
+    }
+
+    // ── Notifications ────────────────────────────────────────────────────
+
+    /**
+     * Extract current-turn notifications as a JSON array of event objects.
+     *
+     * Each notification becomes:
+     *   { "type": <category>, "text": <text>, "icons": [<icon strings>] }
+     */
+    private fun extractNotifications(playerCiv: com.unciv.logic.civilization.Civilization?): JSONArray {
+        val arr = JSONArray()
+        if (playerCiv == null) return arr
+        for (n in playerCiv.notifications) {
+            val obj = JSONObject()
+            obj.put("type", n.category.name)
+            obj.put("text", n.text)
+            val icons = JSONArray()
+            for (icon in n.icons) {
+                icons.put(icon)
+            }
+            obj.put("icons", icons)
+            arr.put(obj)
+        }
+        return arr
     }
 
     // ── Save game to file (for debugging in Unciv GUI) ─────────────────
@@ -779,6 +804,7 @@ object AgentBridge {
 
     private fun applyEndTurn(gameInfo: GameInfo): ActionResult {
         gameInfo.nextTurn()
+        System.gc()  // Reclaim AI automation temporaries (pathfinding, eval scores)
         return ActionResult.Success()
     }
 
