@@ -38,7 +38,7 @@ import org.json.JSONObject
  */
 object AgentBridge {
 
-    const val VERSION = "0.9.0"  // Added notification extraction
+    const val VERSION = "0.10.0"  // disposeGame + configurable civs
     @JvmStatic fun getVersion(): String = VERSION
 
     @Volatile private var initialized: Boolean = false
@@ -100,7 +100,27 @@ object AgentBridge {
 
     // ── Game lifecycle ───────────────────────────────────────────────────
 
-    @JvmStatic fun createGame(seed: Long, mapSize: String = "Tiny", difficulty: String = "Chieftain"): GameInfo {
+    /**
+     * Release references from the previous game so the JVM can GC it.
+     * Call before createGame() or loadGameFromFile() to prevent heap leaks
+     * across episodes.
+     */
+    @JvmStatic fun disposeGame(gameInfo: GameInfo?) {
+        // Clear the UncivGame singleton's reference
+        if (UncivGame.isCurrentInitialized()) {
+            UncivGame.Current.gameInfo = null
+        }
+        // Hint to the GC (not guaranteed, but helps after large deallocations)
+        System.gc()
+    }
+
+    @JvmStatic fun createGame(
+        seed: Long,
+        mapSize: String = "Tiny",
+        difficulty: String = "Chieftain",
+        playerCiv: String = "Rome",
+        aiCiv: String = "Greece"
+    ): GameInfo {
         check(initialized) { "Call initOrThrow(assetsDir) before createGame()" }
 
         val setup = GameSetupInfo()
@@ -109,11 +129,11 @@ object AgentBridge {
         params.players = arrayListOf(
             Player().apply {
                 playerType = PlayerType.Human
-                chosenCiv = "Rome"
+                chosenCiv = playerCiv
             },
             Player().apply {
                 playerType = PlayerType.AI
-                chosenCiv = "Greece"
+                chosenCiv = aiCiv
             }
         )
 
@@ -123,6 +143,10 @@ object AgentBridge {
         setup.mapParameters.seed = seed
         setup.mapParameters.mapSize = MapSize(mapSize)
         setup.mapParameters.strategicBalance = true
+
+        // Use bounded A* pathfinding to prevent AI unit automation from
+        // doing unbounded turn-by-turn BFS on disconnected maps.
+        UncivGame.Current.settings.useAStarPathfinding = true
 
         val gameInfo = GameStarter.startNewGame(setup)
 
