@@ -80,7 +80,11 @@ object AgentBridge {
     private fun initUncivSingletonOrThrow() {
         val game = UncivGame()
         UncivGame.Current = game
-        game.settings = GameSettings()
+        game.settings = GameSettings().apply {
+            // Use bounded A* pathfinding to prevent AI unit automation from
+            // doing unbounded turn-by-turn BFS on disconnected maps.
+            useAStarPathfinding = true
+        }
         game.files = UncivFiles(Gdx.files)
         game.musicController = MusicController()
         game.onlineMultiplayer = Multiplayer()
@@ -143,10 +147,6 @@ object AgentBridge {
         setup.mapParameters.seed = seed
         setup.mapParameters.mapSize = MapSize(mapSize)
         setup.mapParameters.strategicBalance = true
-
-        // Use bounded A* pathfinding to prevent AI unit automation from
-        // doing unbounded turn-by-turn BFS on disconnected maps.
-        UncivGame.Current.settings.useAStarPathfinding = true
 
         val gameInfo = GameStarter.startNewGame(setup)
 
